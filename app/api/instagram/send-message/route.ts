@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getSupabaseServerClient } from "@/lib/supabase-server"
+import { GRAPH, igAuth } from "@/lib/instagram-api"
 
 /**
  * POST /api/instagram/send-message
@@ -25,7 +26,7 @@ export async function POST(request: NextRequest) {
     // Get user's access token
     const { data: user, error: userError } = await supabase
       .from("users")
-      .select("access_token, username")
+      .select("access_token, username, page_id, business_account_id")
       .eq("id", user_id)
       .single()
 
@@ -37,7 +38,8 @@ export async function POST(request: NextRequest) {
     console.log("[v0] Sending DM from", user.username, "to", recipient_id)
 
     // Send message via Instagram API
-    const sendUrl = `https://graph.instagram.com/v24.0/me/messages?access_token=${encodeURIComponent(user.access_token)}`
+    const { token, igId } = igAuth(user)
+    const sendUrl = `${GRAPH}/${igId}/messages?access_token=${encodeURIComponent(token)}`
 
     const response = await fetch(sendUrl, {
       method: "POST",

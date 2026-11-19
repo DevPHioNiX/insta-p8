@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getSupabaseServerClient } from "@/lib/supabase-server"
+import { GRAPH, igAuth } from "@/lib/instagram-api"
 
 export async function GET(request: NextRequest) {
   try {
@@ -13,7 +14,7 @@ export async function GET(request: NextRequest) {
     // 1. Get Access Token
     const { data: user } = await supabase
       .from("users")
-      .select("access_token") // Business ID ki zaroorat nahi hai ab
+      .select("access_token, page_id, business_account_id")
       .eq("id", userId)
       .single()
 
@@ -21,12 +22,11 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Instagram not connected" }, { status: 401 })
     }
 
-    // 2. Fetch Media (Smart Method: /me/media)
-    // Ye 'instagram.com' use karega jo aapke token ke saath compatible hai.
-    // Hum '/me' use kar rahe hain taaki ID mismatch ka lafda hi na ho.
-    const url = `https://graph.instagram.com/me/media?fields=id,caption,media_type,media_url,thumbnail_url,permalink,timestamp&limit=24&access_token=${user.access_token}`
+    // 2. Fetch Media for the IG account (/me is the token owner, not the IG account)
+    const { token, igId } = igAuth(user)
+    const url = `${GRAPH}/${igId}/media?fields=id,caption,media_type,media_url,thumbnail_url,permalink,timestamp&limit=24&access_token=${encodeURIComponent(token)}`
 
-    console.log("[v0] Fetching Media from:", url)
+    console.log("[v0] Fetching Media for IG account:", igId)
 
     const res = await fetch(url, { cache: 'no-store' })
     const data = await res.json()

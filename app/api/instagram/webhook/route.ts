@@ -14,6 +14,9 @@ import {
   verifyIdOwnership,
   sleep,
   buildFollowGateCard,
+  igAuth,
+  GRAPH,
+  type IGAuth,
 } from "@/lib/instagram-api"
 import { generateAIReply } from "@/lib/ai-reply"
 import { bumpUnlockAttempt, clearUnlockAttempts, unlockKey } from "@/lib/unlock-tracking"
@@ -93,7 +96,7 @@ function keywordMatches(triggerValue: string, text: string): boolean {
 // replies, typing indicators, and human-like delays.
 // ============================================================
 async function sendAutomationResponse(
-  token: string,
+  auth: IGAuth,
   recipient: { id?: string; comment_id?: string },
   content: any,
   opts: { skipTyping?: boolean } = {},
@@ -101,7 +104,7 @@ async function sendAutomationResponse(
   const delaySeconds = Number(content.delay_seconds) || 0
   const useTyping = content.typing_indicator === true && recipient.id && !opts.skipTyping
 
-  if (useTyping) await sendSenderAction(token, recipient.id!, "typing_on")
+  if (useTyping) await sendSenderAction(auth, recipient.id!, "typing_on")
   if (delaySeconds > 0) await sleep(delaySeconds * 1000)
 
   const quickReplies = Array.isArray(content.quick_replies)
@@ -112,19 +115,19 @@ async function sendAutomationResponse(
 
   let result
   if (content.media?.url) {
-    result = await sendMediaDM(token, recipient, content.media.type || "image", content.media.url)
+    result = await sendMediaDM(auth, recipient, content.media.type || "image", content.media.url)
     if (result.ok && content.message) {
-      result = await sendTextDM(token, recipient, content.message, quickReplies)
+      result = await sendTextDM(auth, recipient, content.message, quickReplies)
     }
   } else if (content.card) {
-    result = await sendCardDM(token, recipient, content.card)
+    result = await sendCardDM(auth, recipient, content.card)
   } else if (content.message) {
-    result = await sendTextDM(token, recipient, content.message, quickReplies)
+    result = await sendTextDM(auth, recipient, content.message, quickReplies)
   } else {
     result = { ok: false, error: "empty content" }
   }
 
-  if (useTyping) await sendSenderAction(token, recipient.id!, "typing_off")
+  if (useTyping) await sendSenderAction(auth, recipient.id!, "typing_off")
   return result
 }
 
@@ -137,7 +140,7 @@ function responsePreviewText(content: any): string {
 
 // ============================================================
 // Instagram API Helper: Verifies actual follow status
-// API: GET https://graph.instagram.com/v21.0/{recipientId}?fields=is_user_follow_business
+// API: GET https://graph.facebook.com/v24.0/{recipientId}?fields=is_user_follow_business
 // Returns:
 //   { follows: true, error: undefined }  → confirmed following
 //   { follows: false, error: undefined } → confirmed NOT following
@@ -146,7 +149,7 @@ function responsePreviewText(content: any): string {
 // ============================================================
 async function verifyFollowStatus(igScopedId: string, pageAccessToken: string): Promise<{ follows: boolean | null; error?: 'auth' | 'transient' }> {
   try {
-    const url = `https://graph.instagram.com/v21.0/${igScopedId}?fields=is_user_follow_business&access_token=${pageAccessToken}`
+    const url = `${GRAPH}/${igScopedId}?fields=is_user_follow_business&access_token=${pageAccessToken}`
     // 5s timeout -- Graph API is fast, anything longer means trouble
     const response = await fetch(url, { signal: AbortSignal.timeout(5000) })
     if (!response.ok) {
@@ -343,11 +346,11 @@ export async function POST(request: NextRequest) {
                       if (followResult.follows === true) {
                         console.log(`[webhook] ✅ Comment follower gate: @${senderId} follows @${user.username} — sending content`)
                         if (replyMode !== "dm_only") {
-                          await replyToComment(user.access_token, commentId, getPublicReply())
+                          await replyToComment(igAuth(user), commentId, getPublicReply())
                         }
                         if (replyMode !== "public_only") {
                           await sendAutomationResponse(
-                            user.access_token,
+                            igAuth(user),
                             { comment_id: commentId },
                             content,
                             { skipTyping: true },
@@ -356,11 +359,11 @@ export async function POST(request: NextRequest) {
                       } else if (followResult.follows === false) {
                         console.log(`[webhook] 🔒 Comment follower gate: @${senderId} doesn't follow @${user.username}`)
                         if (replyMode !== "dm_only") {
-                          await replyToComment(user.access_token, commentId, getPublicReply())
+                          await replyToComment(igAuth(user), commentId, getPublicReply())
                         }
                         if (replyMode !== "public_only") {
                           await sendCardDM(
-                            user.access_token,
+                            igAuth(user),
                             { comment_id: commentId },
                             buildFollowGateCard({ username: user.username, ruleId: match.id }),
                           )
@@ -372,11 +375,11 @@ export async function POST(request: NextRequest) {
                           // Auth/permission failure — fail CLOSED: send gate card
                           console.warn(`[webhook] ⚠️ Comment follower gate auth failure for @${senderId}; sending gate`)
                           if (replyMode !== "dm_only") {
-                            await replyToComment(user.access_token, commentId, getPublicReply())
+                            await replyToComment(igAuth(user), commentId, getPublicReply())
                           }
                           if (replyMode !== "public_only") {
                             await sendCardDM(
-                              user.access_token,
+                              igAuth(user),
                               { comment_id: commentId },
                               buildFollowGateCard({ username: user.username, ruleId: match.id }),
                             )
@@ -385,11 +388,11 @@ export async function POST(request: NextRequest) {
                           // Transient failure — fail OPEN: deliver content (with public reply if allowed)
                           console.warn(`[webhook] ⚠️ Comment follower gate transient failure for @${senderId}; failing open`)
                           if (replyMode !== "dm_only") {
-                            await replyToComment(user.access_token, commentId, getPublicReply())
+                            await replyToComment(igAuth(user), commentId, getPublicReply())
                           }
                           if (replyMode !== "public_only") {
                             await sendAutomationResponse(
-                              user.access_token,
+                              igAuth(user),
                               { comment_id: commentId },
                               content,
                               { skipTyping: true },
@@ -400,11 +403,11 @@ export async function POST(request: NextRequest) {
                     } else {
                       // No follower check required — send normally
                       if (replyMode !== "dm_only") {
-                        await replyToComment(user.access_token, commentId, getPublicReply())
+                        await replyToComment(igAuth(user), commentId, getPublicReply())
                       }
                       if (replyMode !== "public_only") {
                         await sendAutomationResponse(
-                          user.access_token,
+                          igAuth(user),
                           { comment_id: commentId },
                           content,
                           { skipTyping: true },
@@ -474,26 +477,26 @@ export async function POST(request: NextRequest) {
 
                                             if (followResult.follows === true) {
                                               console.log(`[webhook] ✅ Story follower gate: @${senderId} follows @${user.username} — sending content`)
-                                              await sendAutomationResponse(user.access_token, { id: senderId }, content)
+                                              await sendAutomationResponse(igAuth(user), { id: senderId }, content)
                                             } else if (followResult.follows === false) {
                                               console.log(`[webhook] 🔒 Story follower gate: @${senderId} doesn't follow @${user.username}`)
-                                              await sendCardDM(user.access_token, { id: senderId }, buildFollowGateCard({ username: user.username, ruleId: match.id }))
+                                              await sendCardDM(igAuth(user), { id: senderId }, buildFollowGateCard({ username: user.username, ruleId: match.id }))
                                             } else {
                                               // null → unverifiable. Distinguish auth vs transient.
                                               const isAuthError = followResult.error === 'auth'
                                               if (isAuthError) {
                                                 // Auth failure — fail CLOSED: send gate
                                                 console.warn(`[webhook] ⚠️ Story follower gate auth failure for @${senderId}; sending gate`)
-                                                await sendCardDM(user.access_token, { id: senderId }, buildFollowGateCard({ username: user.username, ruleId: match.id }))
+                                                await sendCardDM(igAuth(user), { id: senderId }, buildFollowGateCard({ username: user.username, ruleId: match.id }))
                                               } else {
                                                 // Transient failure — fail OPEN: deliver content
                                                 console.warn(`[webhook] ⚠️ Story follower gate transient failure for @${senderId}; failing open`)
-                                                await sendAutomationResponse(user.access_token, { id: senderId }, content)
+                                                await sendAutomationResponse(igAuth(user), { id: senderId }, content)
                                               }
                                             }
                                           } else {
                                             // No follower check required — send normally
-                                            await sendAutomationResponse(user.access_token, { id: senderId }, content)
+                                            await sendAutomationResponse(igAuth(user), { id: senderId }, content)
                                           }
                                         }
         }
@@ -621,7 +624,7 @@ export async function POST(request: NextRequest) {
                       // AI fallback: if no keyword rule matched, try AI auto-reply
                       if (user.groq_auto_reply_enabled && triggerType !== "postback") {
                         console.log(`[webhook] 🤖 No rule match — trying AI auto-reply for DM from ${senderId}`)
-                        await sendSenderAction(user.access_token, senderId, "mark_seen")
+                        await sendSenderAction(igAuth(user), senderId, "mark_seen")
                         const conv = await incomingSaved // AI needs history; keyword replies do not.
                         const { data: recentMessages } = conv
                           ? await supabase
@@ -637,8 +640,8 @@ export async function POST(request: NextRequest) {
                         }))
                         const aiReply = await generateAIReply(triggerValue, user.ai_context || "", history, user.groq_api_key, user.ai_base_url, user.ai_model)
                         if (aiReply) {
-                          await sendSenderAction(user.access_token, senderId, "typing_on")
-                          const result = await sendTextDM(user.access_token, { id: senderId }, aiReply)
+                          await sendSenderAction(igAuth(user), senderId, "typing_on")
+                          const result = await sendTextDM(igAuth(user), { id: senderId }, aiReply)
                           if (result?.ok && conv) {
                             try {
                               await supabase.from("messages").insert({
@@ -666,7 +669,7 @@ export async function POST(request: NextRequest) {
 
                     // Mark message as seen for human-like flow
                     if (content.mark_seen !== false) {
-                      await sendSenderAction(user.access_token, senderId, "mark_seen")
+                      await sendSenderAction(igAuth(user), senderId, "mark_seen")
                     }
 
                     // ---------- Follow gate for DMs ----------
@@ -682,7 +685,7 @@ export async function POST(request: NextRequest) {
                         if (followResult.follows === true) {
                           await clearUnlockAttempts(attemptKey)
                           console.log(`[webhook] ✅ DM unlock verified for @${senderId}`)
-                          const result = await sendAutomationResponse(user.access_token, { id: senderId }, content)
+                          const result = await sendAutomationResponse(igAuth(user), { id: senderId }, content)
                           const conv = await incomingSaved
                           if (result?.ok && conv) {
                             try {
@@ -702,7 +705,7 @@ export async function POST(request: NextRequest) {
                         } else if (followResult.follows === false) {
                           await clearUnlockAttempts(attemptKey)
                           console.log(`[webhook] ❌ DM unlock rejected: @${senderId} still doesn't follow`)
-                          const result = await sendCardDM(user.access_token, { id: senderId }, buildFollowGateCard({ username: user.username, ruleId: match.id, title: "❌ Not Following Yet!", subtitle: `We couldn't verify your follow. Please follow @${user.username} and click the button again.` }))
+                          const result = await sendCardDM(igAuth(user), { id: senderId }, buildFollowGateCard({ username: user.username, ruleId: match.id, title: "❌ Not Following Yet!", subtitle: `We couldn't verify your follow. Please follow @${user.username} and click the button again.` }))
                           const conv = await incomingSaved
                           if (result?.ok && conv) {
                             try {
@@ -726,7 +729,7 @@ export async function POST(request: NextRequest) {
                                                     await clearUnlockAttempts(attemptKey)
                                                     console.warn(`[webhook] ⚠️ DM unlock gate capped after ${attempts} unverifiable attempts for @${senderId} / rule ${match.id}`)
                                                     const result = await sendTextDM(
-                                                      user.access_token,
+                                                      igAuth(user),
                                                       { id: senderId },
                                                       "⚠️ We couldn't verify your follow yet. Please reach out if this keeps happening.",
                                                     )
@@ -748,7 +751,7 @@ export async function POST(request: NextRequest) {
                                                     }
                                                   } else {
                                                     console.warn(`[webhook] ⚠️ DM unlock unverifiable (attempt ${attempts}/${UNLOCK_GATE_MAX_ATTEMPTS}) for @${senderId}`)
-                                                    const result = await sendCardDM(user.access_token, { id: senderId }, buildFollowGateCard({ username: user.username, ruleId: match.id, subtitle: `Please follow @${user.username} to see this!` }))
+                                                    const result = await sendCardDM(igAuth(user), { id: senderId }, buildFollowGateCard({ username: user.username, ruleId: match.id, subtitle: `Please follow @${user.username} to see this!` }))
                                                     const conv = await incomingSaved
                                                     if (result?.ok && conv) {
                                                       try {
@@ -774,7 +777,7 @@ export async function POST(request: NextRequest) {
                                                 if (followResult.follows === true) {
                           await clearUnlockAttempts(attemptKey)
                           console.log(`[webhook] ✅ DM follower gate: @${senderId} follows @${user.username} — sending content`)
-                          const result = await sendAutomationResponse(user.access_token, { id: senderId }, content)
+                          const result = await sendAutomationResponse(igAuth(user), { id: senderId }, content)
                           const conv = await incomingSaved
                           if (result?.ok && conv) {
                             try {
@@ -794,7 +797,7 @@ export async function POST(request: NextRequest) {
                         } else if (followResult.follows === false) {
                           await clearUnlockAttempts(attemptKey)
                           console.log(`[webhook] 🔒 DM follower gate: @${senderId} doesn't follow @${user.username}`)
-                          const result = await sendCardDM(user.access_token, { id: senderId }, buildFollowGateCard({ username: user.username, ruleId: match.id, subtitle: `Please follow @${user.username} to see this!` }))
+                          const result = await sendCardDM(igAuth(user), { id: senderId }, buildFollowGateCard({ username: user.username, ruleId: match.id, subtitle: `Please follow @${user.username} to see this!` }))
                           const conv = await incomingSaved
                           if (result?.ok && conv) {
                             try {
@@ -818,7 +821,7 @@ export async function POST(request: NextRequest) {
                           const isAuthError = followResult.error === 'auth'
                           if (isAuthError) {
                             console.warn(`[webhook] ⚠️ DM follower gate auth failure for @${senderId}; sending gate`)
-                            const result = await sendCardDM(user.access_token, { id: senderId }, buildFollowGateCard({ username: user.username, ruleId: match.id, title: "❌ Verification Failed", subtitle: `We can't verify your follow status. Please follow @${user.username} and try again.` }))
+                            const result = await sendCardDM(igAuth(user), { id: senderId }, buildFollowGateCard({ username: user.username, ruleId: match.id, title: "❌ Verification Failed", subtitle: `We can't verify your follow status. Please follow @${user.username} and try again.` }))
                             const conv = await incomingSaved
                             if (result?.ok && conv) {
                               try {
@@ -838,7 +841,7 @@ export async function POST(request: NextRequest) {
                           } else {
                             // Transient failure — fail OPEN on initial trigger
                             console.warn(`[webhook] ⚠️ DM follower gate transient failure for @${senderId}; failing open on initial trigger`)
-                            const result = await sendAutomationResponse(user.access_token, { id: senderId }, content)
+                            const result = await sendAutomationResponse(igAuth(user), { id: senderId }, content)
                             const conv = await incomingSaved
                             if (result?.ok && conv) {
                               try {
@@ -860,7 +863,7 @@ export async function POST(request: NextRequest) {
                       }
                     } else {
                       // No follower check required
-                      const result = await sendAutomationResponse(user.access_token, { id: senderId }, content)
+                      const result = await sendAutomationResponse(igAuth(user), { id: senderId }, content)
                       const conv = await incomingSaved
                       if (result?.ok && conv) {
                         try {

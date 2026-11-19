@@ -1,4 +1,20 @@
-const GRAPH = "https://graph.instagram.com/v24.0"
+// Unified login (system-user / business tokens) is served from graph.facebook.com.
+// "/me" resolves to the token owner (e.g. a system user), not the Instagram account,
+// so every call addresses the IG professional account by its ID.
+export const GRAPH = "https://graph.facebook.com/v24.0"
+
+export interface IGAuth {
+  token: string
+  igId: string
+}
+
+/**
+ * Build IGAuth from a users row. page_id is a text column, so it keeps the full
+ * 17-digit IG account ID; business_account_id is bigint and loses precision in JS.
+ */
+export function igAuth(user: { access_token: string; page_id?: string | null; business_account_id?: any }): IGAuth {
+  return { token: user.access_token, igId: String(user.page_id ?? user.business_account_id) }
+}
 
 export interface IGButton {
   type: "web_url" | "postback"
@@ -88,7 +104,7 @@ export function buildFollowGateCard(params: {
 }
 
 export async function sendTextDM(
-  token: string,
+  auth: IGAuth,
   recipient: { id?: string; comment_id?: string },
   text: string,
   quickReplies?: QuickReply[],
@@ -101,52 +117,52 @@ export async function sendTextDM(
       payload: q.payload,
     }))
   }
-  return post("me/messages", token, { recipient, message })
+  return post(`${auth.igId}/messages`, auth.token, { recipient, message })
 }
 
 export async function sendCardDM(
-  token: string,
+  auth: IGAuth,
   recipient: { id?: string; comment_id?: string },
   card: IGCard,
 ): Promise<SendResult> {
-  return post("me/messages", token, { recipient, message: buildCardAttachment(card) })
+  return post(`${auth.igId}/messages`, auth.token, { recipient, message: buildCardAttachment(card) })
 }
 
 export async function sendMediaDM(
-  token: string,
+  auth: IGAuth,
   recipient: { id?: string; comment_id?: string },
   mediaType: "image" | "video" | "audio",
   url: string,
 ): Promise<SendResult> {
-  return post("me/messages", token, {
+  return post(`${auth.igId}/messages`, auth.token, {
     recipient,
     message: { attachment: { type: mediaType, payload: { url } } },
   })
 }
 
 export async function sendSenderAction(
-  token: string,
+  auth: IGAuth,
   recipientId: string,
   action: "typing_on" | "typing_off" | "mark_seen",
 ): Promise<SendResult> {
-  return post("me/messages", token, { recipient: { id: recipientId }, sender_action: action })
+  return post(`${auth.igId}/messages`, auth.token, { recipient: { id: recipientId }, sender_action: action })
 }
 
 export async function sendMessageReaction(
-  token: string,
+  auth: IGAuth,
   recipientId: string,
   messageId: string,
   reaction = "love",
 ): Promise<SendResult> {
-  return post("me/messages", token, {
+  return post(`${auth.igId}/messages`, auth.token, {
     recipient: { id: recipientId },
     sender_action: "react",
     payload: { message_id: messageId, reaction },
   })
 }
 
-export async function replyToComment(token: string, commentId: string, message: string): Promise<SendResult> {
-  return post(`${commentId}/replies`, token, { message })
+export async function replyToComment(auth: IGAuth, commentId: string, message: string): Promise<SendResult> {
+  return post(`${commentId}/replies`, auth.token, { message })
 }
 
 export async function fetchProfile(token: string, igUserId: string): Promise<{ username?: string; name?: string } | null> {
